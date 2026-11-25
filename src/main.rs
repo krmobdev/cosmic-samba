@@ -56,6 +56,7 @@ impl Application for App {
     type Message = Message;
 
     const APP_ID: &'static str = "com.krmobdev.CosmicSamba";
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     fn core(&self) -> &Core { &self.core }
     fn core_mut(&mut self) -> &mut Core { &mut self.core }
@@ -185,7 +186,7 @@ impl Application for App {
 
     fn view(&self) -> Element<Self::Message> {
         let mut content = widget::column()
-            .push(text::title1("Cosmic Samba ❤️"))
+            .push(text::title1(format!("Cosmic Samba ❤️ v{}", Self::VERSION)))
             .push(text::body(format!("Статус: {}", self.status)))
             .push(
                 widget::row()
