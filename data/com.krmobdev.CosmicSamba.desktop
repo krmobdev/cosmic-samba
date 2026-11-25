@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Cosmic Samba
+Comment=Manage Samba server and shares
+Exec=cosmic-samba
+Icon=com.krmobdev.CosmicSamba
+Terminal=false
+Type=Application
+Categories=System;Network;
+Keywords=samba;smb;share;

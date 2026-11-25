@@ -1,6 +1,6 @@
 use cosmic::app::{Core, Settings, Task};
 use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{self, text, button, text_input, toggler};
+use cosmic::widget::{self, text, button, text_input, toggler, container};
 use cosmic::{Application, Element, executor};
 use std::fs;
 use std::process::Command;
@@ -15,6 +15,7 @@ pub enum Message {
     RemoveShare(usize),
     ShareNameChanged(String),
     SharePathChanged(String),
+    ShareCommentChanged(String),
     ToggleReadOnly(usize),
     ToggleGuest(usize),
     SaveConfig,
@@ -41,6 +42,7 @@ pub struct App {
     shares: Vec<Share>,
     new_name: String,
     new_path: String,
+    new_comment: String,
     config_path: String,
     new_user: String,
     new_password: String,
@@ -64,6 +66,7 @@ impl Application for App {
             shares: Vec::new(),
             new_name: String::new(),
             new_path: String::new(),
+            new_comment: String::new(),
             config_path: "/etc/samba/smb.conf".into(),
             new_user: String::new(),
             new_password: String::new(),
@@ -94,12 +97,13 @@ impl Application for App {
                     self.shares.push(Share {
                         name: self.new_name.clone(),
                         path: self.new_path.clone(),
-                        comment: String::new(),
+                        comment: self.new_comment.clone(),
                         read_only: false,
                         guest_ok: true,
                     });
                     self.new_name.clear();
                     self.new_path.clear();
+                    self.new_comment.clear();
                 }
             }
             Message::RemoveShare(i) => {
@@ -107,6 +111,7 @@ impl Application for App {
             }
             Message::ShareNameChanged(s) => self.new_name = s,
             Message::SharePathChanged(s) => self.new_path = s,
+            Message::ShareCommentChanged(s) => self.new_comment = s,
             Message::ToggleReadOnly(i) => {
                 if let Some(share) = self.shares.get_mut(i) { share.read_only = !share.read_only; }
             }
@@ -163,16 +168,21 @@ impl Application for App {
                     .push(button::standard("Обновить").on_press(Message::ReloadShares))
                     .spacing(10),
             )
-            .spacing(12)
+            .spacing(10)
             .padding(16);
 
         content = content
             .push(text::heading("Добавить шару"))
             .push(
                 widget::row()
-                    .push(text_input("Имя", &self.new_name).on_input(Message::ShareNameChanged).width(Length::Fixed(140.0)))
+                    .push(text_input("Имя", &self.new_name).on_input(Message::ShareNameChanged).width(Length::Fixed(120.0)))
                     .push(text_input("Путь", &self.new_path).on_input(Message::SharePathChanged).width(Length::Fill))
                     .push(button::standard("📁").on_press(Message::PickFolder))
+                    .spacing(6),
+            )
+            .push(
+                widget::row()
+                    .push(text_input("Комментарий", &self.new_comment).on_input(Message::ShareCommentChanged).width(Length::Fill))
                     .push(button::suggested("Добавить").on_press(Message::AddShare))
                     .spacing(6),
             );
@@ -182,15 +192,17 @@ impl Application for App {
             content = content.push(text::body("Нет шар"));
         } else {
             for (i, share) in self.shares.iter().enumerate() {
-                content = content.push(
+                let card = container(
                     widget::column()
                         .push(
                             widget::row()
-                                .push(text::body(format!("{} → {}", share.name, share.path)))
+                                .push(text::heading(&share.name))
                                 .push(button::destructive("Удалить").on_press(Message::RemoveShare(i)))
                                 .spacing(8)
                                 .align_y(Alignment::Center),
                         )
+                        .push(text::body(&share.path))
+                        .push(text::caption(&share.comment))
                         .push(
                             widget::row()
                                 .push(text::body("Read only"))
@@ -200,9 +212,12 @@ impl Application for App {
                                 .spacing(12)
                                 .align_y(Alignment::Center),
                         )
-                        .spacing(2)
-                        .padding([0, 0, 6, 0]),
-                );
+                        .spacing(4)
+                )
+                .padding(12)
+                .width(Length::Fill);
+
+                content = content.push(card);
             }
         }
 
@@ -296,7 +311,7 @@ impl App {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let settings = Settings::default().size(cosmic::iced::Size::new(760.0, 640.0));
+    let settings = Settings::default().size(cosmic::iced::Size::new(780.0, 680.0));
     cosmic::app::run::<App>(settings, ())?;
     Ok(())
 }
