@@ -1,6 +1,6 @@
 use cosmic::app::{Core, Settings, Task};
 use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{self, text, button, text_input};
+use cosmic::widget::{self, text, button, text_input, toggler};
 use cosmic::{Application, Element, executor};
 use std::fs;
 use std::process::Command;
@@ -15,8 +15,11 @@ pub enum Message {
     RemoveShare(usize),
     ShareNameChanged(String),
     SharePathChanged(String),
+    ToggleReadOnly(usize),
+    ToggleGuest(usize),
     SaveConfig,
     ReloadShares,
+    PickFolder,
 }
 
 #[derive(Debug, Clone)]
@@ -95,12 +98,29 @@ impl Application for App {
             }
             Message::ShareNameChanged(s) => self.new_name = s,
             Message::SharePathChanged(s) => self.new_path = s,
+            Message::ToggleReadOnly(i) => {
+                if let Some(share) = self.shares.get_mut(i) {
+                    share.read_only = !share.read_only;
+                }
+            }
+            Message::ToggleGuest(i) => {
+                if let Some(share) = self.shares.get_mut(i) {
+                    share.guest_ok = !share.guest_ok;
+                }
+            }
             Message::SaveConfig => {
                 self.save_smb_conf();
                 let _ = Command::new("systemctl").args(["reload", "smbd"]).status();
             }
-            Message::ReloadShares => {
-                self.load_shares();
+            Message::ReloadShares => self.load_shares(),
+            Message::PickFolder => {
+                if let Ok(output) = Command::new("zenity").args(["--file-selection", "--directory", "--title=Выберите папку для шары"]).output() {
+                    if output.status.success() {
+                        if let Ok(path) = String::from_utf8(output.stdout) {
+                            self.new_path = path.trim().to_string();
+                        }
+                    }
+                }
             }
         }
         Task::none()
@@ -115,18 +135,19 @@ impl Application for App {
                     .push(button::suggested("Старт").on_press(Message::StartSamba))
                     .push(button::destructive("Стоп").on_press(Message::StopSamba))
                     .push(button::standard("Проверить").on_press(Message::StatusCheck))
-                    .push(button::standard("Обновить шары").on_press(Message::ReloadShares))
-                    .spacing(12),
+                    .push(button::standard("Обновить").on_press(Message::ReloadShares))
+                    .spacing(10),
             )
-            .spacing(16)
-            .padding(20);
+            .spacing(14)
+            .padding(16);
 
         content = content
             .push(text::heading("Добавить шару"))
             .push(
                 widget::row()
-                    .push(text_input("Имя", &self.new_name).on_input(Message::ShareNameChanged).width(Length::Fixed(180.0)))
+                    .push(text_input("Имя", &self.new_name).on_input(Message::ShareNameChanged).width(Length::Fixed(160.0)))
                     .push(text_input("Путь", &self.new_path).on_input(Message::SharePathChanged).width(Length::Fill))
+                    .push(button::standard("📁").on_press(Message::PickFolder))
                     .push(button::suggested("Добавить").on_press(Message::AddShare))
                     .spacing(8),
             );
@@ -136,22 +157,31 @@ impl Application for App {
             content = content.push(text::body("Шары не найдены"));
         } else {
             for (i, share) in self.shares.iter().enumerate() {
-                let info = format!("{} → {}  (guest: {}, ro: {})", share.name, share.path, share.guest_ok, share.read_only);
                 content = content.push(
-                    widget::row()
-                        .push(text::body(info))
-                        .push(button::destructive("Удалить").on_press(Message::RemoveShare(i)))
-                        .spacing(12)
-                        .align_y(Alignment::Center),
+                    widget::column()
+                        .push(
+                            widget::row()
+                                .push(text::body(format!("{} → {}", share.name, share.path)))
+                                .push(button::destructive("Удалить").on_press(Message::RemoveShare(i)))
+                                .spacing(12)
+                                .align_y(Alignment::Center),
+                        )
+                        .push(
+                            widget::row()
+                                .push(text::body("Read only"))
+                                .push(toggler(share.read_only).on_toggle(move |_| Message::ToggleReadOnly(i)))
+                                .push(text::body("Guest"))
+                                .push(toggler(share.guest_ok).on_toggle(move |_| Message::ToggleGuest(i)))
+                                .spacing(16)
+                                .align_y(Alignment::Center),
+                        )
+                        .spacing(4)
+                        .padding([0, 0, 8, 0]),
                 );
             }
         }
 
-        content = content.push(
-            widget::row()
-                .push(button::suggested("Сохранить и перезагрузить").on_press(Message::SaveConfig))
-                .spacing(12)
-        );
+        content = content.push(button::suggested("Сохранить и перезагрузить").on_press(Message::SaveConfig));
 
         content.width(Length::Fill).height(Length::Fill).into()
     }
@@ -160,25 +190,17 @@ impl Application for App {
 impl App {
     fn load_shares(&mut self) {
         self.shares.clear();
-        if !Path::new(&self.config_path).exists() {
-            return;
-        }
+        if !Path::new(&self.config_path).exists() { return; }
         if let Ok(content) = fs::read_to_string(&self.config_path) {
             let mut current: Option<Share> = None;
             for line in content.lines() {
                 let line = line.trim();
                 if line.starts_with('[') && line.ends_with(']') && line != "[global]" {
                     if let Some(share) = current.take() {
-                        self.shares.push(share);
+                        if !share.path.is_empty() { self.shares.push(share); }
                     }
                     let name = line[1..line.len()-1].to_string();
-                    current = Some(Share {
-                        name,
-                        path: String::new(),
-                        comment: String::new(),
-                        read_only: false,
-                        guest_ok: false,
-                    });
+                    current = Some(Share { name, path: String::new(), comment: String::new(), read_only: false, guest_ok: false });
                 } else if let Some(ref mut share) = current {
                     if let Some((key, value)) = line.split_once('=') {
                         let key = key.trim();
@@ -186,47 +208,24 @@ impl App {
                         match key {
                             "path" => share.path = value.to_string(),
                             "comment" => share.comment = value.to_string(),
-                            "read only" => share.read_only = value == "yes",
-                            "guest ok" => share.guest_ok = value == "yes",
+                            "read only" => share.read_only = value.eq_ignore_ascii_case("yes"),
+                            "guest ok" => share.guest_ok = value.eq_ignore_ascii_case("yes"),
                             _ => {}
                         }
                     }
                 }
             }
             if let Some(share) = current {
-                if !share.path.is_empty() {
-                    self.shares.push(share);
-                }
+                if !share.path.is_empty() { self.shares.push(share); }
             }
         }
     }
 
     fn save_smb_conf(&self) {
-        let mut conf = String::from(
-            "[global]\n\
-             workgroup = WORKGROUP\n\
-             server string = Cosmic Samba Manager\n\
-             security = user\n\
-             map to guest = Bad User\n\
-             guest account = nobody\n\n"
-        );
-
+        let mut conf = String::from("[global]\nworkgroup = WORKGROUP\nserver string = Cosmic Samba Manager\nsecurity = user\nmap to guest = Bad User\nguest account = nobody\n\n");
         for share in &self.shares {
-            conf.push_str(&format!(
-                "[{}]\n\
-                 path = {}\n\
-                 browseable = yes\n\
-                 read only = {}\n\
-                 guest ok = {}\n\
-                 comment = {}\n\n",
-                share.name,
-                share.path,
-                if share.read_only { "yes" } else { "no" },
-                if share.guest_ok { "yes" } else { "no" },
-                share.comment
-            ));
+            conf.push_str(&format!("[{}]\npath = {}\nbrowseable = yes\nread only = {}\nguest ok = {}\ncomment = {}\n\n", share.name, share.path, if share.read_only {"yes"} else {"no"}, if share.guest_ok {"yes"} else {"no"}, share.comment));
         }
-
         if Path::new("/etc/samba").exists() {
             let _ = fs::write(&self.config_path, conf);
         }
@@ -234,7 +233,7 @@ impl App {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let settings = Settings::default().size(cosmic::iced::Size::new(680.0, 520.0));
+    let settings = Settings::default().size(cosmic::iced::Size::new(720.0, 560.0));
     cosmic::app::run::<App>(settings, ())?;
     Ok(())
 }
