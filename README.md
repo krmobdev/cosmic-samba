@@ -13,6 +13,7 @@
 - Управление пользователями Samba
 - Выбор папки через системный диалог
 - Красивые карточки в стиле Cosmic
+- Статусные сообщения
 
 ## Сборка
 
@@ -23,10 +24,8 @@
 - `zenity` (для выбора папки)
 
 ```bash
-# С just
 just build-release
-
-# Или обычным cargo
+# или
 cargo build --release
 ```
 
@@ -36,13 +35,6 @@ cargo build --release
 just install
 ```
 
-Или вручную:
-
-```bash
-sudo install -Dm755 target/release/cosmic-samba /usr/bin/cosmic-samba
-sudo install -Dm644 data/com.krmobdev.CosmicSamba.desktop /usr/share/applications/
-```
-
 ## Запуск
 
 ```bash
@@ -50,5 +42,7 @@ cosmic-samba
 # или
 just run
 ```
+
+> Для управления службой и записи в `/etc/samba/smb.conf` приложение должно запускаться с правами root или через `pkexec`.
 
 Сделано с любовью для Рустама ❤️
