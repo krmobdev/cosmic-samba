@@ -83,21 +83,19 @@ impl Application for App {
         self.message.clear();
         match message {
             Message::StartSamba => {
-                match Command::new("systemctl").args(["start", "smbd"]).status() {
-                    Ok(s) if s.success() => {
-                        self.status = "Запущен".into();
-                        self.message = "Samba запущена".into();
-                    }
-                    _ => self.message = "Ошибка запуска (нужны права root?)".into(),
+                if run_privileged(&["systemctl", "start", "smbd"]) {
+                    self.status = "Запущен".into();
+                    self.message = "Samba запущена".into();
+                } else {
+                    self.message = "Не удалось запустить (проверь права)".into();
                 }
             }
             Message::StopSamba => {
-                match Command::new("systemctl").args(["stop", "smbd"]).status() {
-                    Ok(s) if s.success() => {
-                        self.status = "Остановлен".into();
-                        self.message = "Samba остановлена".into();
-                    }
-                    _ => self.message = "Ошибка остановки".into(),
+                if run_privileged(&["systemctl", "stop", "smbd"]) {
+                    self.status = "Остановлен".into();
+                    self.message = "Samba остановлена".into();
+                } else {
+                    self.message = "Не удалось остановить".into();
                 }
             }
             Message::StatusCheck => {
@@ -137,10 +135,10 @@ impl Application for App {
             }
             Message::SaveConfig => {
                 if self.save_smb_conf() {
-                    let _ = Command::new("systemctl").args(["reload", "smbd"]).status();
+                    let _ = run_privileged(&["systemctl", "reload", "smbd"]);
                     self.message = "Конфиг сохранён".into();
                 } else {
-                    self.message = "Не удалось записать smb.conf (нужны права?)".into();
+                    self.message = "Не удалось сохранить конфиг".into();
                 }
             }
             Message::ReloadShares => {
@@ -285,6 +283,13 @@ impl Application for App {
     }
 }
 
+fn run_privileged(args: &[&str]) -> bool {
+    if Command::new(args[0]).args(&args[1..]).status().map(|s| s.success()).unwrap_or(false) {
+        return true;
+    }
+    Command::new("pkexec").args(args).status().map(|s| s.success()).unwrap_or(false)
+}
+
 impl App {
     fn load_shares(&mut self) {
         self.shares.clear();
@@ -338,10 +343,14 @@ impl App {
             conf.push_str(&format!("[{}]\npath = {}\nbrowseable = yes\nread only = {}\nguest ok = {}\ncomment = {}\n\n", share.name, share.path, if share.read_only {"yes"} else {"no"}, if share.guest_ok {"yes"} else {"no"}, share.comment));
         }
         if Path::new("/etc/samba").exists() {
-            fs::write(&self.config_path, conf).is_ok()
-        } else {
-            false
-        }
+            if fs::write(&self.config_path, &conf).is_ok() { return true; }
+            let mut child = Command::new("pkexec").args(["tee", &self.config_path]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().unwrap();
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                let _ = stdin.write_all(conf.as_bytes());
+            }
+            child.wait().map(|s| s.success()).unwrap_or(false)
+        } else { false }
     }
 }
 
