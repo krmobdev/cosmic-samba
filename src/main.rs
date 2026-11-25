@@ -280,6 +280,8 @@ impl Application for App {
             }
         }
 
+        content = content.push(text::caption("Сделано с любовью для Рустама ❤️"));
+
         content.width(Length::Fill).height(Length::Fill).into()
     }
 }

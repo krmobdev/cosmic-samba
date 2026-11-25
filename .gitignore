@@ -1,3 +1,8 @@
 /target
-Cargo.lock
 **/*.rs.bk
+Cargo.lock
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
