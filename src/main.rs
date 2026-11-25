@@ -25,6 +25,7 @@ pub enum Message {
     UserPasswordChanged(String),
     AddUser,
     RemoveUser(String),
+    About,
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +181,9 @@ impl Application for App {
                 self.load_users();
                 self.message = "Пользователь удалён".into();
             }
+            Message::About => {
+                self.message = format!("Cosmic Samba v{} — сделано с любовью для Рустама ❤️", Self::VERSION);
+            }
         }
         Task::none()
     }
@@ -194,6 +198,7 @@ impl Application for App {
                     .push(button::destructive("Стоп").on_press(Message::StopSamba))
                     .push(button::standard("Проверить").on_press(Message::StatusCheck))
                     .push(button::standard("Обновить").on_press(Message::ReloadShares))
+                    .push(button::standard("О программе").on_press(Message::About))
                     .spacing(10),
             )
             .spacing(10)
