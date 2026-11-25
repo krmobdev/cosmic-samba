@@ -47,6 +47,7 @@ pub struct App {
     new_user: String,
     new_password: String,
     users: Vec<String>,
+    message: String,
 }
 
 impl Application for App {
@@ -71,6 +72,7 @@ impl Application for App {
             new_user: String::new(),
             new_password: String::new(),
             users: Vec::new(),
+            message: String::new(),
         };
         app.load_shares();
         app.load_users();
@@ -78,14 +80,25 @@ impl Application for App {
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
+        self.message.clear();
         match message {
             Message::StartSamba => {
-                let _ = Command::new("systemctl").args(["start", "smbd"]).status();
-                self.status = "Запущен".into();
+                match Command::new("systemctl").args(["start", "smbd"]).status() {
+                    Ok(s) if s.success() => {
+                        self.status = "Запущен".into();
+                        self.message = "Samba запущена".into();
+                    }
+                    _ => self.message = "Ошибка запуска (нужны права root?)".into(),
+                }
             }
             Message::StopSamba => {
-                let _ = Command::new("systemctl").args(["stop", "smbd"]).status();
-                self.status = "Остановлен".into();
+                match Command::new("systemctl").args(["stop", "smbd"]).status() {
+                    Ok(s) if s.success() => {
+                        self.status = "Остановлен".into();
+                        self.message = "Samba остановлена".into();
+                    }
+                    _ => self.message = "Ошибка остановки".into(),
+                }
             }
             Message::StatusCheck => {
                 if let Ok(out) = Command::new("systemctl").args(["is-active", "smbd"]).output() {
@@ -104,10 +117,14 @@ impl Application for App {
                     self.new_name.clear();
                     self.new_path.clear();
                     self.new_comment.clear();
+                    self.message = "Шара добавлена".into();
                 }
             }
             Message::RemoveShare(i) => {
-                if i < self.shares.len() { self.shares.remove(i); }
+                if i < self.shares.len() {
+                    self.shares.remove(i);
+                    self.message = "Шара удалена".into();
+                }
             }
             Message::ShareNameChanged(s) => self.new_name = s,
             Message::SharePathChanged(s) => self.new_path = s,
@@ -119,17 +136,27 @@ impl Application for App {
                 if let Some(share) = self.shares.get_mut(i) { share.guest_ok = !share.guest_ok; }
             }
             Message::SaveConfig => {
-                self.save_smb_conf();
-                let _ = Command::new("systemctl").args(["reload", "smbd"]).status();
+                if self.save_smb_conf() {
+                    let _ = Command::new("systemctl").args(["reload", "smbd"]).status();
+                    self.message = "Конфиг сохранён".into();
+                } else {
+                    self.message = "Не удалось записать smb.conf (нужны права?)".into();
+                }
             }
-            Message::ReloadShares => self.load_shares(),
+            Message::ReloadShares => {
+                self.load_shares();
+                self.message = "Шары обновлены".into();
+            }
             Message::PickFolder => {
                 if let Ok(output) = Command::new("zenity").args(["--file-selection", "--directory", "--title=Выберите папку"]).output() {
                     if output.status.success() {
                         if let Ok(path) = String::from_utf8(output.stdout) {
                             self.new_path = path.trim().to_string();
+                            self.message = "Папка выбрана".into();
                         }
                     }
+                } else {
+                    self.message = "Установи zenity или введи путь вручную".into();
                 }
             }
             Message::UserNameChanged(s) => self.new_user = s,
@@ -146,11 +173,13 @@ impl Application for App {
                     self.new_user.clear();
                     self.new_password.clear();
                     self.load_users();
+                    self.message = "Пользователь добавлен".into();
                 }
             }
             Message::RemoveUser(user) => {
                 let _ = Command::new("smbpasswd").args(["-x", &user]).status();
                 self.load_users();
+                self.message = "Пользователь удалён".into();
             }
         }
         Task::none()
@@ -170,6 +199,10 @@ impl Application for App {
             )
             .spacing(10)
             .padding(16);
+
+        if !self.message.is_empty() {
+            content = content.push(text::body(&self.message));
+        }
 
         content = content
             .push(text::heading("Добавить шару"))
@@ -299,19 +332,21 @@ impl App {
         }
     }
 
-    fn save_smb_conf(&self) {
+    fn save_smb_conf(&self) -> bool {
         let mut conf = String::from("[global]\nworkgroup = WORKGROUP\nserver string = Cosmic Samba Manager\nsecurity = user\nmap to guest = Bad User\nguest account = nobody\n\n");
         for share in &self.shares {
             conf.push_str(&format!("[{}]\npath = {}\nbrowseable = yes\nread only = {}\nguest ok = {}\ncomment = {}\n\n", share.name, share.path, if share.read_only {"yes"} else {"no"}, if share.guest_ok {"yes"} else {"no"}, share.comment));
         }
         if Path::new("/etc/samba").exists() {
-            let _ = fs::write(&self.config_path, conf);
+            fs::write(&self.config_path, conf).is_ok()
+        } else {
+            false
         }
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let settings = Settings::default().size(cosmic::iced::Size::new(780.0, 680.0));
+    let settings = Settings::default().size(cosmic::iced::Size::new(800.0, 700.0));
     cosmic::app::run::<App>(settings, ())?;
     Ok(())
 }
