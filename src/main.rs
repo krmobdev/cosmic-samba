@@ -20,6 +20,10 @@ pub enum Message {
     SaveConfig,
     ReloadShares,
     PickFolder,
+    UserNameChanged(String),
+    UserPasswordChanged(String),
+    AddUser,
+    RemoveUser(String),
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +42,9 @@ pub struct App {
     new_name: String,
     new_path: String,
     config_path: String,
+    new_user: String,
+    new_password: String,
+    users: Vec<String>,
 }
 
 impl Application for App {
@@ -58,8 +65,12 @@ impl Application for App {
             new_name: String::new(),
             new_path: String::new(),
             config_path: "/etc/samba/smb.conf".into(),
+            new_user: String::new(),
+            new_password: String::new(),
+            users: Vec::new(),
         };
         app.load_shares();
+        app.load_users();
         (app, Task::none())
     }
 
@@ -92,21 +103,15 @@ impl Application for App {
                 }
             }
             Message::RemoveShare(i) => {
-                if i < self.shares.len() {
-                    self.shares.remove(i);
-                }
+                if i < self.shares.len() { self.shares.remove(i); }
             }
             Message::ShareNameChanged(s) => self.new_name = s,
             Message::SharePathChanged(s) => self.new_path = s,
             Message::ToggleReadOnly(i) => {
-                if let Some(share) = self.shares.get_mut(i) {
-                    share.read_only = !share.read_only;
-                }
+                if let Some(share) = self.shares.get_mut(i) { share.read_only = !share.read_only; }
             }
             Message::ToggleGuest(i) => {
-                if let Some(share) = self.shares.get_mut(i) {
-                    share.guest_ok = !share.guest_ok;
-                }
+                if let Some(share) = self.shares.get_mut(i) { share.guest_ok = !share.guest_ok; }
             }
             Message::SaveConfig => {
                 self.save_smb_conf();
@@ -114,13 +119,33 @@ impl Application for App {
             }
             Message::ReloadShares => self.load_shares(),
             Message::PickFolder => {
-                if let Ok(output) = Command::new("zenity").args(["--file-selection", "--directory", "--title=Выберите папку для шары"]).output() {
+                if let Ok(output) = Command::new("zenity").args(["--file-selection", "--directory", "--title=Выберите папку"]).output() {
                     if output.status.success() {
                         if let Ok(path) = String::from_utf8(output.stdout) {
                             self.new_path = path.trim().to_string();
                         }
                     }
                 }
+            }
+            Message::UserNameChanged(s) => self.new_user = s,
+            Message::UserPasswordChanged(s) => self.new_password = s,
+            Message::AddUser => {
+                if !self.new_user.is_empty() && !self.new_password.is_empty() {
+                    let _ = Command::new("useradd").args(["-M", "-s", "/sbin/nologin", &self.new_user]).status();
+                    let mut child = Command::new("smbpasswd").args(["-a", &self.new_user]).stdin(std::process::Stdio::piped()).spawn().unwrap();
+                    if let Some(mut stdin) = child.stdin.take() {
+                        use std::io::Write;
+                        let _ = writeln!(stdin, "{}\n{}", self.new_password, self.new_password);
+                    }
+                    let _ = child.wait();
+                    self.new_user.clear();
+                    self.new_password.clear();
+                    self.load_users();
+                }
+            }
+            Message::RemoveUser(user) => {
+                let _ = Command::new("smbpasswd").args(["-x", &user]).status();
+                self.load_users();
             }
         }
         Task::none()
@@ -138,23 +163,23 @@ impl Application for App {
                     .push(button::standard("Обновить").on_press(Message::ReloadShares))
                     .spacing(10),
             )
-            .spacing(14)
+            .spacing(12)
             .padding(16);
 
         content = content
             .push(text::heading("Добавить шару"))
             .push(
                 widget::row()
-                    .push(text_input("Имя", &self.new_name).on_input(Message::ShareNameChanged).width(Length::Fixed(160.0)))
+                    .push(text_input("Имя", &self.new_name).on_input(Message::ShareNameChanged).width(Length::Fixed(140.0)))
                     .push(text_input("Путь", &self.new_path).on_input(Message::SharePathChanged).width(Length::Fill))
                     .push(button::standard("📁").on_press(Message::PickFolder))
                     .push(button::suggested("Добавить").on_press(Message::AddShare))
-                    .spacing(8),
+                    .spacing(6),
             );
 
-        content = content.push(text::heading("Текущие шары"));
+        content = content.push(text::heading("Шары"));
         if self.shares.is_empty() {
-            content = content.push(text::body("Шары не найдены"));
+            content = content.push(text::body("Нет шар"));
         } else {
             for (i, share) in self.shares.iter().enumerate() {
                 content = content.push(
@@ -163,7 +188,7 @@ impl Application for App {
                             widget::row()
                                 .push(text::body(format!("{} → {}", share.name, share.path)))
                                 .push(button::destructive("Удалить").on_press(Message::RemoveShare(i)))
-                                .spacing(12)
+                                .spacing(8)
                                 .align_y(Alignment::Center),
                         )
                         .push(
@@ -172,16 +197,41 @@ impl Application for App {
                                 .push(toggler(share.read_only).on_toggle(move |_| Message::ToggleReadOnly(i)))
                                 .push(text::body("Guest"))
                                 .push(toggler(share.guest_ok).on_toggle(move |_| Message::ToggleGuest(i)))
-                                .spacing(16)
+                                .spacing(12)
                                 .align_y(Alignment::Center),
                         )
-                        .spacing(4)
-                        .padding([0, 0, 8, 0]),
+                        .spacing(2)
+                        .padding([0, 0, 6, 0]),
                 );
             }
         }
 
-        content = content.push(button::suggested("Сохранить и перезагрузить").on_press(Message::SaveConfig));
+        content = content.push(button::suggested("Сохранить шары").on_press(Message::SaveConfig));
+
+        content = content
+            .push(text::heading("Пользователи Samba"))
+            .push(
+                widget::row()
+                    .push(text_input("Имя", &self.new_user).on_input(Message::UserNameChanged).width(Length::Fixed(140.0)))
+                    .push(text_input("Пароль", &self.new_password).on_input(Message::UserPasswordChanged).password().width(Length::Fixed(140.0)))
+                    .push(button::suggested("Добавить").on_press(Message::AddUser))
+                    .spacing(6),
+            );
+
+        if self.users.is_empty() {
+            content = content.push(text::body("Нет пользователей"));
+        } else {
+            for user in &self.users {
+                let u = user.clone();
+                content = content.push(
+                    widget::row()
+                        .push(text::body(user))
+                        .push(button::destructive("Удалить").on_press(Message::RemoveUser(u)))
+                        .spacing(12)
+                        .align_y(Alignment::Center),
+                );
+            }
+        }
 
         content.width(Length::Fill).height(Length::Fill).into()
     }
@@ -221,6 +271,19 @@ impl App {
         }
     }
 
+    fn load_users(&mut self) {
+        self.users.clear();
+        if let Ok(output) = Command::new("pdbedit").args(["-L"]).output() {
+            if let Ok(text) = String::from_utf8(output.stdout) {
+                for line in text.lines() {
+                    if let Some(name) = line.split(':').next() {
+                        if !name.is_empty() { self.users.push(name.to_string()); }
+                    }
+                }
+            }
+        }
+    }
+
     fn save_smb_conf(&self) {
         let mut conf = String::from("[global]\nworkgroup = WORKGROUP\nserver string = Cosmic Samba Manager\nsecurity = user\nmap to guest = Bad User\nguest account = nobody\n\n");
         for share in &self.shares {
@@ -233,7 +296,7 @@ impl App {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let settings = Settings::default().size(cosmic::iced::Size::new(720.0, 560.0));
+    let settings = Settings::default().size(cosmic::iced::Size::new(760.0, 640.0));
     cosmic::app::run::<App>(settings, ())?;
     Ok(())
 }
