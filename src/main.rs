@@ -25,6 +25,7 @@ pub enum Message {
     ToggleGuest(usize),
     SaveConfig,
     ReloadShares,
+    ReloadUsers,
     PickFolder,
     UserNameChanged(String),
     UserPasswordChanged(String),
@@ -73,7 +74,6 @@ impl Application for App {
             message: String::new(),
         };
         app.load_shares();
-        app.load_users();
         (app, Task::none())
     }
 
@@ -163,6 +163,7 @@ impl Application for App {
                     Err(error) => self.message = format!("Не удалось перечитать smb.conf: {}", error),
                 }
             }
+            Message::ReloadUsers => self.load_users(),
             Message::PickFolder => {
                 let res = run(&["zenity", "--file-selection", "--directory", "--title=Выберите папку"]);
                 if res.success {
@@ -283,7 +284,13 @@ impl Application for App {
         content = content.push(button::suggested("Сохранить шары").on_press(Message::SaveConfig));
 
         content = content
-            .push(text::heading("Пользователи Samba"))
+            .push(
+                widget::row()
+                    .push(text::heading("Пользователи Samba"))
+                    .push(button::standard("Обновить список").on_press(Message::ReloadUsers))
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+            )
             .push(
                 widget::row()
                     .push(text_input("Имя", &self.new_user).on_input(Message::UserNameChanged).width(Length::Fixed(140.0)))
@@ -293,7 +300,8 @@ impl Application for App {
             );
 
         if self.users.is_empty() {
-            content = content.push(text::body("Нет пользователей"));
+            content = content.push(text::body("Список не загружен или пользователей нет. Нажмите «Обновить список»."));
+
         } else {
             for user in &self.users {
                 let u = user.clone();
@@ -323,7 +331,7 @@ impl App {
 
     fn load_users(&mut self) {
         self.users.clear();
-        let res = run(&["pdbedit", "-L"]);
+        let res = run_privileged(&["pdbedit", "-L"]);
         if res.success {
             for line in res.stdout.lines() {
                 if let Some(name) = line.split(':').next() {
