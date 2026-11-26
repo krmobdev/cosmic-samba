@@ -2,8 +2,6 @@ name: Rust CI
 
 on:
   pull_request:
-  push:
-    branches: [main, audit-fixes]
 
 permissions:
   contents: read
