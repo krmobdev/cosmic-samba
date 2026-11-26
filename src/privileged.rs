@@ -162,9 +162,16 @@ fn acquire_config_lock(parent: &Path) -> Result<ConfigLock, String> {
     for attempt in 0..2 {
         match fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&lock_path) {
             Ok(mut file) => {
-                writeln!(file, "{}", std::process::id())
-                    .map_err(|e| format!("Не удалось записать блокировку конфигурации: {e}"))?;
-                file.sync_all().map_err(|e| format!("Не удалось синхронизировать блокировку: {e}"))?;
+                if let Err(error) = writeln!(file, "{}", std::process::id()) {
+                    drop(file);
+                    let _ = fs::remove_file(&lock_path);
+                    return Err(format!("Не удалось записать блокировку конфигурации: {error}"));
+                }
+                if let Err(error) = file.sync_all() {
+                    drop(file);
+                    let _ = fs::remove_file(&lock_path);
+                    return Err(format!("Не удалось синхронизировать блокировку: {error}"));
+                }
                 return Ok(ConfigLock(lock_path));
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists && attempt == 0 => {
