@@ -94,7 +94,7 @@ impl SambaConfig {
     /// comments, global settings and non-share sections remain verbatim.
     /// Existing path-bearing shares omitted from desired are intentionally removed.
     pub fn render_with_shares(&self, desired: &[Share]) -> Result<String, String> {
-        let mut desired_by_name: HashMap<String, Share> = HashMap::new();
+        let mut desired_by_name: BTreeMap<String, Share> = BTreeMap::new();
         for share in desired {
             if !crate::validation::is_valid_share_name(&share.name) {
                 return Err(format!("Некорректное имя шары: {}", share.name));
@@ -181,7 +181,7 @@ fn parse_share(section: &RawSection) -> Result<Option<Share>, String> {
         name: section.name.clone(),
         path: unquote(path),
         comment: values.get("comment").map(|v| unquote(v)).unwrap_or_default(),
-        read_only: values.get("read only").map(|v| parse_bool(v)).unwrap_or(false),
+        read_only: values.get("read only").map(|v| parse_bool(v)).unwrap_or(true),
         guest_ok: values.get("guest ok").map(|v| parse_bool(v)).unwrap_or(false),
         extra: BTreeMap::new(),
     }))
