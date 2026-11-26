@@ -340,6 +340,8 @@ impl App {
                     }
                 }
             }
+        } else {
+            self.message = format!("Не удалось загрузить пользователей Samba: {}", res.stderr.trim());
         }
     }
 
