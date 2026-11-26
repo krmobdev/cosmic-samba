@@ -11,7 +11,6 @@ pub struct CmdResult {
     pub success: bool,
     pub stdout: String,
     pub stderr: String,
-    pub code: Option<i32>,
 }
 
 impl CmdResult {
@@ -20,7 +19,6 @@ impl CmdResult {
             success: out.status.success(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-            code: out.status.code(),
         }
     }
 
