@@ -209,7 +209,7 @@ impl Application for App {
         Task::none()
     }
 
-    fn view(&self) -> Element<Self::Message> {
+    fn view(&self) -> Element<'_, Self::Message> {
         let mut content = widget::column([])
             .push(text::title1(format!("Cosmic Samba ❤️ v{}", env!("CARGO_PKG_VERSION"))))
             .push(text::body(format!("Статус: {}", self.status)))
