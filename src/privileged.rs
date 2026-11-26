@@ -86,6 +86,9 @@ pub fn save_config_privileged(content: &str) -> Result<(), String> {
 
 pub fn add_samba_user(user: &str, password: &str) -> CmdResult {
     if !valid_system_username(user) { return CmdResult::error("Некорректное имя пользователя"); }
+    if password.is_empty() || password.chars().any(|c| c.is_control()) {
+        return CmdResult::error("Пароль пуст или содержит управляющие символы");
+    }
     let executable = match env::current_exe() {
         Ok(path) => path,
         Err(e) => return CmdResult::error(e.to_string()),
@@ -138,8 +141,12 @@ pub fn remove_samba_user(user: &str) -> CmdResult {
 }
 
 fn valid_system_username(user: &str) -> bool {
-    !user.is_empty() && user.len() <= 32 &&
-        user.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    !user.is_empty()
+        && user.len() <= 32
+        && user.as_bytes()[0].is_ascii_alphabetic()
+        && user
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
 fn write_config_atomically(path: &Path, content: &str) -> Result<(), String> {
