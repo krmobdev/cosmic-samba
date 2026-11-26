@@ -180,10 +180,21 @@ fn parse_share(section: &RawSection) -> Result<Option<Share>, String> {
     for (offset, line) in section.lines.iter().enumerate().skip(1) {
         if let Some((key, value)) = assignment(line) {
             let key = key.to_ascii_lowercase();
-            if ["path", "comment", "read only", "guest ok"].contains(&key.as_str()) {
-                if values.insert(key.clone(), value.to_string()).is_some() {
-                    return Err(format!("Повторяющийся параметр '{}' в секции [{}], строка внутри секции {}", key, section.name, offset + 1));
+            let canonical = match key.as_str() {
+                "path" | "directory" => "path",
+                "comment" => "comment",
+                "read only" | "writable" | "writeable" => "read only",
+                "guest ok" | "public" => "guest ok",
+                _ => continue,
+            };
+            let normalized_value = match key.as_str() {
+                "writable" | "writeable" => {
+                    if parse_bool(value)? { "no" } else { "yes" }.to_string()
                 }
+                _ => value.to_string(),
+            };
+            if values.insert(canonical.to_string(), normalized_value).is_some() {
+                return Err(format!("Повторяющийся параметр '{}' или его псевдоним в секции [{}], строка внутри секции {}", canonical, section.name, offset + 1));
             }
         }
     }
@@ -224,20 +235,18 @@ fn patch_share(lines: &[String], share: &Share) -> Result<Vec<String>, String> {
         if index == 0 { result.push(line.clone()); continue; }
         let Some((key, _)) = assignment(line) else { result.push(line.clone()); continue; };
         let normalized = key.to_ascii_lowercase();
-        let value = match normalized.as_str() {
-            "path" => Some(quote_value(&share.path)),
-            "comment" => Some(quote_value(&share.comment)),
-            "read only" => Some(if share.read_only { "yes" } else { "no" }.to_string()),
-            "guest ok" => Some(if share.guest_ok { "yes" } else { "no" }.to_string()),
-            _ => None,
+        let (canonical, value) = match normalized.as_str() {
+            "path" | "directory" => ("path", quote_value(&share.path)),
+            "comment" => ("comment", quote_value(&share.comment)),
+            "read only" | "writable" | "writeable" => ("read only", if share.read_only { "yes" } else { "no" }.to_string()),
+            "guest ok" | "public" => ("guest ok", if share.guest_ok { "yes" } else { "no" }.to_string()),
+            _ => { result.push(line.clone()); continue; }
         };
-        if let Some(value) = value {
-            if !seen.insert(normalized.clone()) {
-                return Err(format!("Повторяющийся параметр '{}' в секции [{}]", normalized, share.name));
-            }
-            let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
-            result.push(format!("{}{} = {}", indent, key, value));
-        } else { result.push(line.clone()); }
+        if !seen.insert(canonical.to_string()) {
+            return Err(format!("Повторяющийся параметр '{}' или его псевдоним в секции [{}]", canonical, share.name));
+        }
+        let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+        result.push(format!("{}{} = {}", indent, canonical, value));
     }
     for (key, value) in [
         ("path", quote_value(&share.path)),
@@ -324,6 +333,29 @@ mod tests {
     fn rejects_invalid_managed_boolean_values() {
         assert!(SambaConfig::parse("[data]\npath = /srv/data\nread only = maybe\n").is_err());
         assert!(SambaConfig::parse("[data]\npath = /srv/data\nguest ok = perhaps\n").is_err());
+    }
+
+    #[test]
+    fn handles_samba_aliases_without_leaving_conflicting_settings() {
+        let cfg = SambaConfig::parse("[data]\ndirectory = /srv/data\nwritable = yes\npublic = yes\n").unwrap();
+        assert_eq!(cfg.shares[0].path, "/srv/data");
+        assert!(!cfg.shares[0].read_only);
+        assert!(cfg.shares[0].guest_ok);
+        let mut desired = cfg.shares.clone();
+        desired[0].read_only = true;
+        desired[0].guest_ok = false;
+        let rendered = cfg.render_with_shares(&desired).unwrap();
+        assert!(rendered.contains("path = \"/srv/data\""));
+        assert!(rendered.contains("read only = yes"));
+        assert!(rendered.contains("guest ok = no"));
+        assert!(!rendered.contains("writable ="));
+        assert!(!rendered.contains("public ="));
+    }
+
+    #[test]
+    fn rejects_conflicting_samba_aliases() {
+        assert!(SambaConfig::parse("[data]\npath = /srv/data\ndirectory = /other\n").is_err());
+        assert!(SambaConfig::parse("[data]\npath = /srv/data\nread only = yes\nwritable = yes\n").is_err());
     }
 
     #[test]
