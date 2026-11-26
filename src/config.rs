@@ -47,8 +47,8 @@ impl SambaConfig {
 
         for (line_no, line) in content.lines().enumerate() {
             let trimmed = line.trim();
-            if trimmed.starts_with('[') || trimmed.ends_with(']') {
-                if !(trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 3) {
+            if trimmed.starts_with('[') {
+                if !(trimmed.ends_with(']') && trimmed.len() >= 3) {
                     return Err(format!("Некорректный заголовок секции в строке {}", line_no + 1));
                 }
                 if let Some(section) = current.take() {
