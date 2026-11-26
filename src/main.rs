@@ -7,7 +7,7 @@ use cosmic::app::{Core, Settings, Task};
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget::{self, text, button, text_input, toggler, container};
 use cosmic::{Application, Element, executor};
-use privileged::{run, run_privileged, smbpasswd_add};
+use privileged::{add_samba_user, maybe_handle_admin_command, remove_samba_user, run, run_privileged, save_config_privileged};
 use std::path::Path;
 use validation::{is_valid_path, is_valid_share_name};
 
@@ -140,8 +140,12 @@ impl Application for App {
             Message::SaveConfig => {
                 match self.save_config() {
                     Ok(()) => {
-                        let _ = run_privileged(&["systemctl", "reload", "smbd"]);
-                        self.message = "Конфиг сохранён безопасно (резервная копия + testparm)".into();
+                        let reload = run_privileged(&["systemctl", "reload", "smbd"]);
+                        if reload.success {
+                            self.message = "Конфигурация сохранена и Samba перезагружена".into();
+                        } else {
+                            self.message = format!("Конфигурация сохранена, но reload smbd не выполнен: {}", reload.stderr.trim());
+                        }
                     }
                     Err(e) => self.message = format!("Ошибка сохранения: {}", e),
                 }
@@ -170,23 +174,22 @@ impl Application for App {
                 if self.new_user.is_empty() || self.new_password.is_empty() {
                     self.message = "Имя и пароль обязательны".into();
                 } else {
-                    let _ = run(&["useradd", "-M", "-s", "/sbin/nologin", &self.new_user]);
-                    let res = smbpasswd_add(&self.new_user, &self.new_password);
+                    let res = add_samba_user(&self.new_user, &self.new_password);
+                    self.new_password.clear();
                     if res.success {
                         self.new_user.clear();
-                        self.new_password.clear();
                         self.load_users();
-                        self.message = "Пользователь добавлен".into();
+                        self.message = "Пользователь Samba добавлен".into();
                     } else {
                         self.message = format!("Ошибка добавления пользователя: {}", res.stderr.trim());
                     }
                 }
             }
             Message::RemoveUser(user) => {
-                let res = run(&["smbpasswd", "-x", &user]);
+                let res = remove_samba_user(&user);
                 if res.success {
                     self.load_users();
-                    self.message = "Пользователь удалён".into();
+                    self.message = "Пользователь Samba удалён".into();
                 } else {
                     self.message = format!("Ошибка удаления: {}", res.stderr.trim());
                 }
@@ -305,7 +308,7 @@ impl App {
     fn load_shares(&mut self) {
         match SambaConfig::load(Path::new(&self.config_path)) {
             Ok(cfg) => self.shares = cfg.shares,
-            Err(_) => self.shares.clear(),
+            Err(error) => self.message = format!("Не удалось прочитать smb.conf: {}", error),
         }
     }
 
@@ -324,44 +327,17 @@ impl App {
     }
 
     fn save_config(&self) -> Result<(), String> {
-        let mut cfg = SambaConfig::load(Path::new(&self.config_path))
-            .unwrap_or_else(|_| SambaConfig {
-                global: Default::default(),
-                shares: Vec::new(),
-                preamble: String::new(),
-            });
-
-        // Ensure minimal safe globals if empty
-        if cfg.global.is_empty() {
-            cfg.global.insert("workgroup".into(), "WORKGROUP".into());
-            cfg.global.insert("security".into(), "user".into());
-        }
-
-        // Replace shares with current managed list (preserves extras of existing by name)
-        let mut new_shares = Vec::new();
-        for share in &self.shares {
-            if let Some(existing) = cfg.shares.iter().find(|s| s.name == share.name) {
-                let mut updated = share.clone();
-                updated.extra = existing.extra.clone();
-                new_shares.push(updated);
-            } else {
-                new_shares.push(share.clone());
-            }
-        }
-        // Keep unmanaged shares that are not in the app list? For now we treat all loaded as managed.
-        // To preserve truly external shares, we would need a managed flag. For safety we keep all previous that are not overwritten.
-        for old in &cfg.shares {
-            if !new_shares.iter().any(|s| s.name == old.name) {
-                new_shares.push(old.clone());
-            }
-        }
-        cfg.shares = new_shares;
-
-        cfg.save_safe(Path::new(&self.config_path))
+        let cfg = SambaConfig::load(Path::new(&self.config_path))
+            .map_err(|error| format!("Не удалось прочитать существующий smb.conf: {error}"))?;
+        let content = cfg.render_with_shares(&self.shares)?;
+        save_config_privileged(&content)
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(code) = maybe_handle_admin_command() {
+        std::process::exit(code);
+    }
     let settings = Settings::default().size(cosmic::iced::Size::new(800.0, 700.0));
     cosmic::app::run::<App>(settings, ())?;
     Ok(())
