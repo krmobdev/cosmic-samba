@@ -70,10 +70,15 @@ pub fn save_config_privileged(content: &str) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("Не удалось запустить pkexec: {e}"))?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(content.as_bytes()).map_err(|e| format!("Не удалось передать конфигурацию: {e}"))?;
-    }
+    let write_error = if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(content.as_bytes()).err()
+    } else {
+        Some(io::Error::new(io::ErrorKind::BrokenPipe, "stdin pkexec недоступен"))
+    };
     let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if let Some(error) = write_error {
+        return Err(format!("Не удалось передать конфигурацию: {error}"));
+    }
     if output.status.success() { Ok(()) } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
@@ -99,13 +104,14 @@ pub fn add_samba_user(user: &str, password: &str) -> CmdResult {
         Ok(child) => child,
         Err(e) => return CmdResult::error(format!("Не удалось запустить привилегированную операцию: {e}")),
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Err(e) = writeln!(stdin, "{0}\n{0}", password) {
-            return CmdResult::error(format!("Не удалось передать пароль: {e}"));
-        }
-    }
+    let write_error = if let Some(mut stdin) = child.stdin.take() {
+        writeln!(stdin, "{0}\n{0}", password).err()
+    } else {
+        Some(io::Error::new(io::ErrorKind::BrokenPipe, "stdin helper недоступен"))
+    };
     match child.wait_with_output() {
-        Ok(output) => CmdResult::from_output(output),
+        Ok(output) if write_error.is_none() => CmdResult::from_output(output),
+        Ok(_) => CmdResult::error(format!("Не удалось передать пароль: {}", write_error.unwrap())),
         Err(e) => CmdResult::error(e.to_string()),
     }
 }
@@ -279,7 +285,7 @@ fn admin_add_user(user: &str, password: &str) -> Result<(), String> {
         true
     };
 
-    let mut child = Command::new("smbpasswd")
+    let mut child = match Command::new("smbpasswd")
         .args(["-s", "-a", user])
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .spawn() {
