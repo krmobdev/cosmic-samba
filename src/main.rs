@@ -54,7 +54,6 @@ impl Application for App {
     type Message = Message;
 
     const APP_ID: &'static str = "com.krmobdev.CosmicSamba";
-    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     fn core(&self) -> &Core { &self.core }
     fn core_mut(&mut self) -> &mut Core { &mut self.core }
@@ -205,18 +204,18 @@ impl Application for App {
                 }
             }
             Message::About => {
-                self.message = format!("Cosmic Samba v{} — безопасное управление Samba ❤️", Self::VERSION);
+                self.message = format!("Cosmic Samba v{} — безопасное управление Samba ❤️", env!("CARGO_PKG_VERSION"));
             }
         }
         Task::none()
     }
 
     fn view(&self) -> Element<Self::Message> {
-        let mut content = widget::column()
-            .push(text::title1(format!("Cosmic Samba ❤️ v{}", Self::VERSION)))
+        let mut content = widget::column([])
+            .push(text::title1(format!("Cosmic Samba ❤️ v{}", env!("CARGO_PKG_VERSION"))))
             .push(text::body(format!("Статус: {}", self.status)))
             .push(
-                widget::row()
+                widget::row([])
                     .push(button::suggested("Старт").on_press(Message::StartSamba))
                     .push(button::destructive("Стоп").on_press(Message::StopSamba))
                     .push(button::standard("Проверить").on_press(Message::StatusCheck))
@@ -234,14 +233,14 @@ impl Application for App {
         content = content
             .push(text::heading("Добавить шару"))
             .push(
-                widget::row()
+                widget::row([])
                     .push(text_input("Имя", &self.new_name).on_input(Message::ShareNameChanged).width(Length::Fixed(120.0)))
                     .push(text_input("Путь", &self.new_path).on_input(Message::SharePathChanged).width(Length::Fill))
                     .push(button::standard("📁").on_press(Message::PickFolder))
                     .spacing(6),
             )
             .push(
-                widget::row()
+                widget::row([])
                     .push(text_input("Комментарий", &self.new_comment).on_input(Message::ShareCommentChanged).width(Length::Fill))
                     .push(button::suggested("Добавить").on_press(Message::AddShare))
                     .spacing(6),
@@ -253,9 +252,9 @@ impl Application for App {
         } else {
             for (i, share) in self.shares.iter().enumerate() {
                 let card = container(
-                    widget::column()
+                    widget::column([])
                         .push(
-                            widget::row()
+                            widget::row([])
                                 .push(text::heading(&share.name))
                                 .push(button::destructive("Удалить").on_press(Message::RemoveShare(i)))
                                 .spacing(8)
@@ -264,7 +263,7 @@ impl Application for App {
                         .push(text::body(&share.path))
                         .push(text::caption(&share.comment))
                         .push(
-                            widget::row()
+                            widget::row([])
                                 .push(text::body("Read only"))
                                 .push(toggler(share.read_only).on_toggle(move |_| Message::ToggleReadOnly(i)))
                                 .push(text::body("Guest"))
@@ -285,14 +284,14 @@ impl Application for App {
 
         content = content
             .push(
-                widget::row()
+                widget::row([])
                     .push(text::heading("Пользователи Samba"))
                     .push(button::standard("Обновить список").on_press(Message::ReloadUsers))
                     .spacing(8)
                     .align_y(Alignment::Center),
             )
             .push(
-                widget::row()
+                widget::row([])
                     .push(text_input("Имя", &self.new_user).on_input(Message::UserNameChanged).width(Length::Fixed(140.0)))
                     .push(text_input("Пароль", &self.new_password).on_input(Message::UserPasswordChanged).password().width(Length::Fixed(140.0)))
                     .push(button::suggested("Добавить").on_press(Message::AddUser))
@@ -306,7 +305,7 @@ impl Application for App {
             for user in &self.users {
                 let u = user.clone();
                 content = content.push(
-                    widget::row()
+                    widget::row([])
                         .push(text::body(user))
                         .push(button::destructive("Удалить").on_press(Message::RemoveUser(u)))
                         .spacing(12)
