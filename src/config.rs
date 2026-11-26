@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -10,7 +10,6 @@ pub struct Share {
     pub comment: String,
     pub read_only: bool,
     pub guest_ok: bool,
-    pub extra: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -205,7 +204,6 @@ fn parse_share(section: &RawSection) -> Result<Option<Share>, String> {
         comment: values.get("comment").map(|v| unquote(v)).unwrap_or_default(),
         read_only: values.get("read only").map(|v| parse_bool(v)).transpose()?.unwrap_or(true),
         guest_ok: values.get("guest ok").map(|v| parse_bool(v)).transpose()?.unwrap_or(false),
-        extra: BTreeMap::new(),
     }))
 }
 
@@ -305,7 +303,7 @@ mod tests {
     #[test]
     fn adds_new_share_without_rewriting_existing_sections() {
         let cfg = SambaConfig::parse("[global]\nworkgroup = WORKGROUP\n").unwrap();
-        let share = Share { name: "new".into(), path: "/srv/new".into(), comment: String::new(), read_only: false, guest_ok: false, extra: BTreeMap::new() };
+        let share = Share { name: "new".into(), path: "/srv/new".into(), comment: String::new(), read_only: false, guest_ok: false };
         let rendered = cfg.render_with_shares(&[share]).unwrap();
         assert!(rendered.contains("[global]\nworkgroup = WORKGROUP"));
         assert!(rendered.contains("[new]"));
