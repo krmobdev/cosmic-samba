@@ -385,7 +385,7 @@ fn admin_add_user(user: &str, password: &str) -> Result<(), String> {
         return Err(format!("Не удалось передать пароль в smbpasswd: {error}"));
     }
     if !output.status.success() {
-        if created { let _ = Command::new("userdel").arg(user).output(); }
+        if created { rollback_created_user(user); }
         return Err(format!("smbpasswd завершился с ошибкой: {}", String::from_utf8_lossy(&output.stderr).trim()));
     }
     Ok(())
