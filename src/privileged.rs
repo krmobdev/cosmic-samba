@@ -149,12 +149,53 @@ fn valid_system_username(user: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
+struct ConfigLock(PathBuf);
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn acquire_config_lock(parent: &Path) -> Result<ConfigLock, String> {
+    let lock_path = parent.join(".cosmic-samba.lock");
+    for attempt in 0..2 {
+        match fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&lock_path) {
+            Ok(mut file) => {
+                writeln!(file, "{}", std::process::id())
+                    .map_err(|e| format!("Не удалось записать блокировку конфигурации: {e}"))?;
+                file.sync_all().map_err(|e| format!("Не удалось синхронизировать блокировку: {e}"))?;
+                return Ok(ConfigLock(lock_path));
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && attempt == 0 => {
+                let pid_text = fs::read_to_string(&lock_path)
+                    .map_err(|e| format!("Конфигурация уже заблокирована; не удалось проверить блокировку: {e}"))?;
+                let pid: u32 = pid_text.trim().parse()
+                    .map_err(|_| "Конфигурация заблокирована неизвестным процессом; удалите /etc/samba/.cosmic-samba.lock после проверки".to_string())?;
+                let alive = Command::new("kill").args(["-0", &pid.to_string()]).status()
+                    .map(|status| status.success()).unwrap_or(true);
+                if alive {
+                    return Err("Другая операция уже изменяет smb.conf. Повторите позже.".into());
+                }
+                fs::remove_file(&lock_path)
+                    .map_err(|e| format!("Не удалось удалить устаревшую блокировку: {e}"))?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return Err("Другая операция уже изменяет smb.conf. Повторите позже.".into());
+            }
+            Err(error) => return Err(format!("Не удалось заблокировать smb.conf: {error}")),
+        }
+    }
+    Err("Не удалось получить блокировку smb.conf".into())
+}
+
 fn write_config_atomically(path: &Path, content: &str) -> Result<(), String> {
     if path != Path::new(SMB_CONF) {
         return Err("Запись разрешена только в /etc/samba/smb.conf".into());
     }
     let parent = path.parent().ok_or("У конфигурации отсутствует родительский каталог")?;
     if !parent.is_dir() { return Err("Каталог /etc/samba не существует".into()); }
+    let _lock = acquire_config_lock(parent)?;
 
     let original = match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
