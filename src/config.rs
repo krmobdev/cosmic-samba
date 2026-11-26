@@ -58,7 +58,9 @@ impl SambaConfig {
                 if name.is_empty() || !names.insert(name.to_ascii_lowercase()) {
                     return Err(format!("Пустая или повторяющаяся секция в строке {}", line_no + 1));
                 }
-                current = Some(RawSection { is_share: !name.eq_ignore_ascii_case("global"), name, lines: vec![line.to_string()] });
+                let reserved = ["global", "homes", "printers", "print$", "ipc$", "profiles"];
+                let is_share = !reserved.iter().any(|reserved| name.eq_ignore_ascii_case(reserved));
+                current = Some(RawSection { is_share, name, lines: vec![line.to_string()] });
             } else if let Some(section) = current.as_mut() {
                 if let Some((key, _)) = assignment(trimmed) {
                     if key.eq_ignore_ascii_case("include") || key.eq_ignore_ascii_case("config file") {
@@ -301,6 +303,17 @@ mod tests {
         assert!(SambaConfig::parse("[global]\ninclude = /etc/samba/extra.conf\n").is_err());
         assert!(SambaConfig::parse("[a]\npath = /a\n[a]\npath = /b\n").is_err());
         assert!(SambaConfig::parse("[broken\npath = /x\n").is_err());
+    }
+
+    #[test]
+    fn preserves_reserved_samba_sections_even_when_they_have_paths() {
+        let cfg = SambaConfig::parse("[global]\nworkgroup = WORKGROUP\n[homes]\npath = /home/%S\nread only = yes\n[printers]\npath = /var/spool/samba\nprintable = yes\n[print$]\npath = /var/lib/samba/printers\n").unwrap();
+        assert!(cfg.shares.is_empty());
+        let rendered = cfg.render_with_shares(&[]).unwrap();
+        assert!(rendered.contains("[homes]"));
+        assert!(rendered.contains("path = /home/%S"));
+        assert!(rendered.contains("[printers]"));
+        assert!(rendered.contains("[print$]"));
     }
 
     #[test]
