@@ -143,7 +143,13 @@ fn write_config_atomically(path: &Path, content: &str) -> Result<(), String> {
     let parent = path.parent().ok_or("У конфигурации отсутствует родительский каталог")?;
     if !parent.is_dir() { return Err("Каталог /etc/samba не существует".into()); }
 
-    let original = match fs::metadata(path) {
+    let original = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err("Отказ от изменения smb.conf: файл является символической ссылкой".into());
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err("Отказ от изменения smb.conf: путь не является обычным файлом".into());
+        }
         Ok(metadata) => Some(metadata),
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(format!("Не удалось прочитать метаданные конфигурации: {error}")),
@@ -276,14 +282,23 @@ fn admin_add_user(user: &str, password: &str) -> Result<(), String> {
     let mut child = Command::new("smbpasswd")
         .args(["-s", "-a", user])
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().map_err(|e| format!("Не удалось запустить smbpasswd: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Err(error) = writeln!(stdin, "{0}\n{0}", password) {
-            if created { let _ = Command::new("userdel").arg(user).output(); }
-            return Err(format!("Не удалось передать пароль в smbpasswd: {error}"));
-        }
-    }
+        .spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                if created { let _ = Command::new("userdel").arg(user).output(); }
+                return Err(format!("Не удалось запустить smbpasswd: {error}"));
+            }
+        };
+    let write_error = if let Some(mut stdin) = child.stdin.take() {
+        writeln!(stdin, "{0}\n{0}", password).err()
+    } else {
+        Some(io::Error::new(io::ErrorKind::BrokenPipe, "stdin smbpasswd недоступен"))
+    };
     let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if let Some(error) = write_error {
+        if created { let _ = Command::new("userdel").arg(user).output(); }
+        return Err(format!("Не удалось передать пароль в smbpasswd: {error}"));
+    }
     if !output.status.success() {
         if created { let _ = Command::new("userdel").arg(user).output(); }
         return Err(format!("smbpasswd завершился с ошибкой: {}", String::from_utf8_lossy(&output.stderr).trim()));
