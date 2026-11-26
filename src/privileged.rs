@@ -176,7 +176,7 @@ fn write_config_atomically(path: &Path, content: &str) -> Result<(), String> {
             fs::set_permissions(&temp_path, fs::Permissions::from_mode(metadata.permissions().mode() & 0o777))
                 .map_err(|e| format!("Не удалось сохранить права доступа: {e}"))?;
             let owner = Command::new("chown")
-                .arg("--reference").arg(path).arg(&temp_path).output()
+                .arg(format!("--reference={}", path.display())).arg(&temp_path).output()
                 .map_err(|e| format!("Не удалось сохранить владельца файла: {e}"))?;
             if !owner.status.success() {
                 return Err(format!("Не удалось сохранить владельца файла: {}", String::from_utf8_lossy(&owner.stderr).trim()));
