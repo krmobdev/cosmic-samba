@@ -75,7 +75,13 @@ pub fn save_config_privileged(content: &str) -> Result<(), String> {
     } else {
         Some(io::Error::new(io::ErrorKind::BrokenPipe, "stdin pkexec недоступен"))
     };
-    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(error) => {
+            if created { rollback_created_user(user); }
+            return Err(format!("Не удалось дождаться smbpasswd: {error}"));
+        }
+    };
     if let Some(error) = write_error {
         return Err(format!("Не удалось передать конфигурацию: {error}"));
     }
@@ -338,6 +344,11 @@ pub fn maybe_handle_admin_command() -> Option<i32> {
     }
 }
 
+fn rollback_created_user(user: &str) {
+    let _ = Command::new("smbpasswd").args(["-x", user]).output();
+    let _ = Command::new("userdel").arg(user).output();
+}
+
 fn admin_add_user(user: &str, password: &str) -> Result<(), String> {
     let exists = Command::new("id").arg("-u").arg(user).output()
         .map(|out| out.status.success()).unwrap_or(false);
@@ -359,7 +370,7 @@ fn admin_add_user(user: &str, password: &str) -> Result<(), String> {
         .spawn() {
             Ok(child) => child,
             Err(error) => {
-                if created { let _ = Command::new("userdel").arg(user).output(); }
+                if created { rollback_created_user(user); }
                 return Err(format!("Не удалось запустить smbpasswd: {error}"));
             }
         };
