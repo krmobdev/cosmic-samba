@@ -2,6 +2,8 @@ name: Rust CI
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -37,8 +39,8 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Format Rust source
-        run: cargo fmt --all
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
 
       - name: Check
         run: cargo check --all-targets
