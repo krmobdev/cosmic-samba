@@ -107,6 +107,10 @@ impl Application for App {
                     self.message = "Некорректное имя шары".into();
                 } else if !is_valid_path(&self.new_path) {
                     self.message = "Некорректный путь (должен быть абсолютным, без ..)".into();
+                } else if self.shares.iter().any(|share| share.name.eq_ignore_ascii_case(&self.new_name)) {
+                    self.message = "Шара с таким именем уже существует".into();
+                } else if self.new_comment.chars().any(|c| c.is_control()) {
+                    self.message = "Комментарий содержит недопустимые управляющие символы".into();
                 } else {
                     self.shares.push(Share {
                         name: self.new_name.clone(),
@@ -151,8 +155,13 @@ impl Application for App {
                 }
             }
             Message::ReloadShares => {
-                self.load_shares();
-                self.message = "Шары обновлены".into();
+                match SambaConfig::load(Path::new(&self.config_path)) {
+                    Ok(cfg) => {
+                        self.shares = cfg.shares;
+                        self.message = "Шары обновлены".into();
+                    }
+                    Err(error) => self.message = format!("Не удалось перечитать smb.conf: {}", error),
+                }
             }
             Message::PickFolder => {
                 let res = run(&["zenity", "--file-selection", "--directory", "--title=Выберите папку"]);
