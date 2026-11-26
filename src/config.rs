@@ -192,14 +192,18 @@ fn parse_share(section: &RawSection) -> Result<Option<Share>, String> {
         name: section.name.clone(),
         path: unquote(path),
         comment: values.get("comment").map(|v| unquote(v)).unwrap_or_default(),
-        read_only: values.get("read only").map(|v| parse_bool(v)).unwrap_or(true),
-        guest_ok: values.get("guest ok").map(|v| parse_bool(v)).unwrap_or(false),
+        read_only: values.get("read only").map(|v| parse_bool(v)).transpose()?.unwrap_or(true),
+        guest_ok: values.get("guest ok").map(|v| parse_bool(v)).transpose()?.unwrap_or(false),
         extra: BTreeMap::new(),
     }))
 }
 
-fn parse_bool(value: &str) -> bool {
-    matches!(unquote(value).to_ascii_lowercase().as_str(), "yes" | "true" | "1")
+fn parse_bool(value: &str) -> Result<bool, String> {
+    match unquote(value).to_ascii_lowercase().as_str() {
+        "yes" | "true" | "1" => Ok(true),
+        "no" | "false" | "0" => Ok(false),
+        other => Err(format!("Некорректное логическое значение Samba: {other}")),
+    }
 }
 
 fn unquote(value: &str) -> String {
@@ -314,6 +318,12 @@ mod tests {
         assert!(rendered.contains("path = /home/%S"));
         assert!(rendered.contains("[printers]"));
         assert!(rendered.contains("[print$]"));
+    }
+
+    #[test]
+    fn rejects_invalid_managed_boolean_values() {
+        assert!(SambaConfig::parse("[data]\npath = /srv/data\nread only = maybe\n").is_err());
+        assert!(SambaConfig::parse("[data]\npath = /srv/data\nguest ok = perhaps\n").is_err());
     }
 
     #[test]
