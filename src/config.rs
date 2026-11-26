@@ -106,8 +106,14 @@ impl SambaConfig {
                 return Err(format!("Комментарий шары {} содержит управляющие символы", share.name));
             }
             let key = share.name.to_ascii_lowercase();
-            if desired_by_name.insert(key, share.clone()).is_some() {
+            if desired_by_name.insert(key.clone(), share.clone()).is_some() {
                 return Err(format!("Повторяющееся имя шары: {}", share.name));
+            }
+            if self.sections.iter().any(|section| {
+                section.name.eq_ignore_ascii_case(&share.name)
+                    && parse_share(section).map(|parsed| parsed.is_none()).unwrap_or(true)
+            }) {
+                return Err(format!("Имя шары {} конфликтует с существующей специальной секцией", share.name));
             }
         }
 
@@ -115,6 +121,9 @@ impl SambaConfig {
         for line in &self.preamble {
             output.push_str(line);
             output.push('\n');
+        }
+        if !self.sections.iter().any(|section| !section.is_share) {
+            output.push_str("[global]\n\n");
         }
 
         for section in &self.sections {
