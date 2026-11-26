@@ -23,7 +23,7 @@ impl CmdResult {
     }
 
     fn error(message: impl Into<String>) -> Self {
-        Self { success: false, stdout: String::new(), stderr: message.into(), code: None }
+        Self { success: false, stdout: String::new(), stderr: message.into() }
     }
 }
 
