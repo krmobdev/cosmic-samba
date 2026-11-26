@@ -4,7 +4,8 @@ pub fn is_valid_share_name(name: &str) -> bool {
     if name.is_empty() || name.len() > 80 || name.trim() != name {
         return false;
     }
-    if name.eq_ignore_ascii_case("global") {
+    const RESERVED: &[&str] = &["global", "homes", "printers", "print$", "ipc$", "profiles"];
+    if RESERVED.iter().any(|reserved| name.eq_ignore_ascii_case(reserved)) {
         return false;
     }
     name.chars().all(|c| {
@@ -34,6 +35,9 @@ mod tests {
         assert!(!is_valid_share_name(""));
         assert!(!is_valid_share_name(" global "));
         assert!(!is_valid_share_name("GLOBAL"));
+        assert!(!is_valid_share_name("homes"));
+        assert!(!is_valid_share_name("PRINT$"));
+        assert!(!is_valid_share_name("IPC$"));
     }
 
     #[test]
