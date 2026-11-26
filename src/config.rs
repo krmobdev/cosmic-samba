@@ -1,8 +1,7 @@
-use std::collections::BTreeMap;
-use std::fs::{self, File};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
+use std::io;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Share {
@@ -11,230 +10,292 @@ pub struct Share {
     pub comment: String,
     pub read_only: bool,
     pub guest_ok: bool,
-    /// Unknown parameters preserved as-is
     pub extra: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
+struct RawSection {
+    name: String,
+    lines: Vec<String>,
+    is_share: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct SambaConfig {
-    pub global: BTreeMap<String, String>,
+    preamble: Vec<String>,
+    sections: Vec<RawSection>,
     pub shares: Vec<Share>,
-    /// Raw lines before first section (comments, etc.)
-    pub preamble: String,
 }
 
 impl SambaConfig {
     pub fn load(path: &Path) -> io::Result<Self> {
-        if !path.exists() {
-            return Ok(Self {
-                global: BTreeMap::new(),
-                shares: Vec::new(),
-                preamble: String::new(),
-            });
+        match fs::read_to_string(path) {
+            Ok(content) => Self::parse(&content)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                Ok(Self { preamble: Vec::new(), sections: Vec::new(), shares: Vec::new() })
+            }
+            Err(e) => Err(e),
         }
-        let content = fs::read_to_string(path)?;
-        Ok(Self::parse(&content))
     }
 
-    pub fn parse(content: &str) -> Self {
-        let mut config = Self {
-            global: BTreeMap::new(),
-            shares: Vec::new(),
-            preamble: String::new(),
-        };
-        let mut current_section: Option<String> = None;
-        let mut current_extra = BTreeMap::new();
-        let mut current_share: Option<Share> = None;
-        let mut preamble = String::new();
+    pub fn parse(content: &str) -> Result<Self, String> {
+        let mut preamble = Vec::new();
+        let mut sections: Vec<RawSection> = Vec::new();
+        let mut current: Option<RawSection> = None;
+        let mut names = HashSet::new();
 
-        for line in content.lines() {
+        for (line_no, line) in content.lines().enumerate() {
             let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
-                if current_section.is_none() {
-                    preamble.push_str(line);
-                    preamble.push('\n');
+            if trimmed.starts_with('[') || trimmed.ends_with(']') {
+                if !(trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 3) {
+                    return Err(format!("Некорректный заголовок секции в строке {}", line_no + 1));
                 }
-                continue;
-            }
-            if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                // flush previous
-                if let Some(name) = current_section.take() {
-                    if name == "global" {
-                        // already in global map
-                    } else if let Some(mut share) = current_share.take() {
-                        share.extra = current_extra.drain().collect();
-                        if !share.path.is_empty() {
-                            config.shares.push(share);
-                        }
-                    }
+                if let Some(section) = current.take() {
+                    sections.push(section);
                 }
-                current_extra.clear();
                 let name = trimmed[1..trimmed.len() - 1].trim().to_string();
-                current_section = Some(name.clone());
-                if name != "global" {
-                    current_share = Some(Share {
-                        name,
-                        path: String::new(),
-                        comment: String::new(),
-                        read_only: false,
-                        guest_ok: false,
-                        extra: BTreeMap::new(),
-                    });
+                if name.is_empty() || !names.insert(name.to_ascii_lowercase()) {
+                    return Err(format!("Пустая или повторяющаяся секция в строке {}", line_no + 1));
                 }
-                continue;
-            }
-            if let Some((key, value)) = trimmed.split_once('=') {
-                let key = key.trim().to_string();
-                let value = value.trim().to_string();
-                if let Some(ref section) = current_section {
-                    if section == "global" {
-                        config.global.insert(key, value);
-                    } else if let Some(ref mut share) = current_share {
-                        match key.as_str() {
-                            "path" => share.path = value,
-                            "comment" => share.comment = value,
-                            "read only" => share.read_only = value.eq_ignore_ascii_case("yes"),
-                            "guest ok" => share.guest_ok = value.eq_ignore_ascii_case("yes"),
-                            _ => {
-                                current_extra.insert(key, value);
-                            }
-                        }
+                current = Some(RawSection { is_share: !name.eq_ignore_ascii_case("global"), name, lines: vec![line.to_string()] });
+            } else if let Some(section) = current.as_mut() {
+                if let Some((key, _)) = assignment(trimmed) {
+                    if key.eq_ignore_ascii_case("include") || key.eq_ignore_ascii_case("config file") {
+                        return Err(format!("Конфигурация содержит include/config file (строка {}). Сначала объедините включаемые файлы вручную.", line_no + 1));
                     }
                 }
+                section.lines.push(line.to_string());
+            } else {
+                if let Some((key, _)) = assignment(trimmed) {
+                    if key.eq_ignore_ascii_case("include") || key.eq_ignore_ascii_case("config file") {
+                        return Err(format!("Конфигурация содержит include/config file (строка {}). Сначала объедините включаемые файлы вручную.", line_no + 1));
+                    }
+                }
+                preamble.push(line.to_string());
             }
         }
-        // flush last
-        if let Some(mut share) = current_share {
-            share.extra = current_extra;
-            if !share.path.is_empty() {
-                config.shares.push(share);
+        if let Some(section) = current {
+            sections.push(section);
+        }
+
+        let mut shares = Vec::new();
+        for section in &sections {
+            if section.is_share {
+                if let Some(share) = parse_share(section)? {
+                    shares.push(share);
+                }
             }
         }
-        config.preamble = preamble;
-        config
+        Ok(Self { preamble, sections, shares })
     }
 
-    pub fn to_string(&self) -> String {
-        let mut out = self.preamble.clone();
-        out.push_str("[global]\n");
-        for (k, v) in &self.global {
-            out.push_str(&format!("{} = {}\n", k, v));
+    /// Rewrites only settings managed by the UI. All other original lines,
+    /// comments, global settings and non-share sections remain verbatim.
+    /// Existing path-bearing shares omitted from desired are intentionally removed.
+    pub fn render_with_shares(&self, desired: &[Share]) -> Result<String, String> {
+        let mut desired_by_name: HashMap<String, Share> = HashMap::new();
+        for share in desired {
+            if !crate::validation::is_valid_share_name(&share.name) {
+                return Err(format!("Некорректное имя шары: {}", share.name));
+            }
+            if !crate::validation::is_valid_path(&share.path) {
+                return Err(format!("Некорректный путь для шары {}", share.name));
+            }
+            if share.comment.chars().any(|c| c.is_control()) {
+                return Err(format!("Комментарий шары {} содержит управляющие символы", share.name));
+            }
+            let key = share.name.to_ascii_lowercase();
+            if desired_by_name.insert(key, share.clone()).is_some() {
+                return Err(format!("Повторяющееся имя шары: {}", share.name));
+            }
         }
-        out.push('\n');
-        for share in &self.shares {
-            out.push_str(&format!("[{}]\n", share.name));
-            out.push_str(&format!("path = {}\n", share.path));
-            out.push_str(&format!("browseable = yes\n"));
-            out.push_str(&format!(
-                "read only = {}\n",
-                if share.read_only { "yes" } else { "no" }
-            ));
-            out.push_str(&format!(
-                "guest ok = {}\n",
-                if share.guest_ok { "yes" } else { "no" }
-            ));
+
+        let mut output = String::new();
+        for line in &self.preamble {
+            output.push_str(line);
+            output.push('\n');
+        }
+
+        for section in &self.sections {
+            if !section.is_share {
+                append_lines(&mut output, &section.lines);
+                continue;
+            }
+            if let Some(original) = parse_share(section)? {
+                let key = original.name.to_ascii_lowercase();
+                if let Some(updated) = desired_by_name.remove(&key) {
+                    let patched = patch_share(&section.lines, &updated)?;
+                    append_lines(&mut output, &patched);
+                }
+                // Path-bearing shares omitted by the UI are removed.
+            } else {
+                // Preserve special sections such as [printers] without a path.
+                append_lines(&mut output, &section.lines);
+            }
+        }
+
+        for share in desired_by_name.into_values() {
+            if !output.is_empty() && !output.ends_with("\n\n") {
+                output.push('\n');
+            }
+            output.push_str(&format!("[{}]\n", share.name));
+            output.push_str(&format!("path = {}\n", quote_value(&share.path)));
+            output.push_str("browseable = yes\n");
+            output.push_str(&format!("read only = {}\n", if share.read_only { "yes" } else { "no" }));
+            output.push_str(&format!("guest ok = {}\n", if share.guest_ok { "yes" } else { "no" }));
             if !share.comment.is_empty() {
-                out.push_str(&format!("comment = {}\n", share.comment));
+                output.push_str(&format!("comment = {}\n", quote_value(&share.comment)));
             }
-            for (k, v) in &share.extra {
-                out.push_str(&format!("{} = {}\n", k, v));
-            }
-            out.push('\n');
+            output.push('\n');
         }
-        out
+        if !output.ends_with('\n') { output.push('\n'); }
+        Ok(output)
     }
+}
 
-    /// Safe write: backup, testparm, atomic rename, rollback on failure
-    pub fn save_safe(&self, path: &Path) -> Result<(), String> {
-        let content = self.to_string();
+fn append_lines(output: &mut String, lines: &[String]) {
+    for line in lines { output.push_str(line); output.push('\n'); }
+}
 
-        // Validate with testparm if available
-        let tmp_dir = path.parent().unwrap_or(Path::new("/tmp"));
-        let tmp_path = tmp_dir.join(format!(".smb.conf.tmp.{}", std::process::id()));
-        {
-            let mut f = File::create(&tmp_path).map_err(|e| e.to_string())?;
-            f.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
-            f.sync_all().ok();
-        }
+fn assignment(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') || line.starts_with(';') { return None; }
+    line.split_once('=').map(|(key, value)| (key.trim(), value.trim()))
+}
 
-        // testparm check
-        let test = Command::new("testparm")
-            .args(["-s", tmp_path.to_str().unwrap_or("")])
-            .output();
-        if let Ok(out) = test {
-            if !out.status.success() {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(format!(
-                    "testparm failed: {}",
-                    String::from_utf8_lossy(&out.stderr)
-                ));
+fn parse_share(section: &RawSection) -> Result<Option<Share>, String> {
+    let mut values: HashMap<String, String> = HashMap::new();
+    for (offset, line) in section.lines.iter().enumerate().skip(1) {
+        if let Some((key, value)) = assignment(line) {
+            let key = key.to_ascii_lowercase();
+            if ["path", "comment", "read only", "guest ok"].contains(&key.as_str()) {
+                if values.insert(key.clone(), value.to_string()).is_some() {
+                    return Err(format!("Повторяющийся параметр '{}' в секции [{}], строка внутри секции {}", key, section.name, offset + 1));
+                }
             }
         }
-        // if testparm not found, continue with caution
-
-        // Backup original
-        let backup = PathBuf::from(format!("{}.bak", path.display()));
-        if path.exists() {
-            fs::copy(path, &backup).map_err(|e| e.to_string())?;
-        }
-
-        // Atomic replace
-        fs::rename(&tmp_path, path).map_err(|e| {
-            // rollback
-            if backup.exists() {
-                let _ = fs::copy(&backup, path);
-            }
-            e.to_string()
-        })?;
-
-        Ok(())
     }
+    let Some(path) = values.get("path") else { return Ok(None) };
+    Ok(Some(Share {
+        name: section.name.clone(),
+        path: unquote(path),
+        comment: values.get("comment").map(|v| unquote(v)).unwrap_or_default(),
+        read_only: values.get("read only").map(|v| parse_bool(v)).unwrap_or(false),
+        guest_ok: values.get("guest ok").map(|v| parse_bool(v)).unwrap_or(false),
+        extra: BTreeMap::new(),
+    }))
+}
+
+fn parse_bool(value: &str) -> bool {
+    matches!(unquote(value).to_ascii_lowercase().as_str(), "yes" | "true" | "1")
+}
+
+fn unquote(value: &str) -> String {
+    let value = value.trim();
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        value[1..value.len() - 1].to_string()
+    } else { value.to_string() }
+}
+
+fn quote_value(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn patch_share(lines: &[String], share: &Share) -> Result<Vec<String>, String> {
+    let mut result = Vec::with_capacity(lines.len() + 4);
+    let mut seen = HashSet::new();
+    for (index, line) in lines.iter().enumerate() {
+        if index == 0 { result.push(line.clone()); continue; }
+        let Some((key, _)) = assignment(line) else { result.push(line.clone()); continue; };
+        let normalized = key.to_ascii_lowercase();
+        let value = match normalized.as_str() {
+            "path" => Some(quote_value(&share.path)),
+            "comment" => Some(quote_value(&share.comment)),
+            "read only" => Some(if share.read_only { "yes" } else { "no" }.to_string()),
+            "guest ok" => Some(if share.guest_ok { "yes" } else { "no" }.to_string()),
+            _ => None,
+        };
+        if let Some(value) = value {
+            if !seen.insert(normalized.clone()) {
+                return Err(format!("Повторяющийся параметр '{}' в секции [{}]", normalized, share.name));
+            }
+            let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            result.push(format!("{}{} = {}", indent, key, value));
+        } else { result.push(line.clone()); }
+    }
+    for (key, value) in [
+        ("path", quote_value(&share.path)),
+        ("read only", if share.read_only { "yes".to_string() } else { "no".to_string() }),
+        ("guest ok", if share.guest_ok { "yes".to_string() } else { "no".to_string() }),
+    ] {
+        if !seen.contains(key) { result.push(format!("{} = {}", key, value)); }
+    }
+    if !share.comment.is_empty() && !seen.contains("comment") {
+        result.push(format!("comment = {}", quote_value(&share.comment)));
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const SAMPLE: &str = "# Keep this header\n\n[global]\nworkgroup = MYGROUP\nserver string = Old\n\n# External section\n[other]\npath = \"/tmp/other\"\nfoo = bar\n# keep this comment\n\n[printers]\nprintable = yes\n";
+
     #[test]
-    fn preserves_global_and_extra_params() {
-        let input = r#"[global]
-workgroup = MYGROUP
-server string = Old
-unknown = keepme
-
-[other]
-path = /tmp/other
-comment = external
-foo = bar
-
-[managed]
-path = /home/share
-read only = no
-guest ok = yes
-comment = mine
-"#;
-        let cfg = SambaConfig::parse(input);
-        assert_eq!(cfg.global.get("workgroup").map(|s| s.as_str()), Some("MYGROUP"));
-        assert_eq!(cfg.global.get("unknown").map(|s| s.as_str()), Some("keepme"));
-        assert_eq!(cfg.shares.len(), 2);
-        let managed = cfg.shares.iter().find(|s| s.name == "managed").unwrap();
-        assert_eq!(managed.path, "/home/share");
-        assert!(managed.guest_ok);
-        let other = cfg.shares.iter().find(|s| s.name == "other").unwrap();
-        assert_eq!(other.extra.get("foo").map(|s| s.as_str()), Some("bar"));
-
-        let out = cfg.to_string();
-        assert!(out.contains("workgroup = MYGROUP"));
-        assert!(out.contains("unknown = keepme"));
-        assert!(out.contains("foo = bar"));
+    fn preserves_globals_comments_unknown_settings_and_special_sections() {
+        let cfg = SambaConfig::parse(SAMPLE).unwrap();
+        let rendered = cfg.render_with_shares(&cfg.shares).unwrap();
+        assert!(rendered.contains("workgroup = MYGROUP"));
+        assert!(rendered.contains("server string = Old"));
+        assert!(rendered.contains("foo = bar"));
+        assert!(rendered.contains("# keep this comment"));
+        assert!(rendered.contains("[printers]"));
+        assert!(rendered.contains("printable = yes"));
+        assert!(rendered.contains("# Keep this header"));
     }
 
     #[test]
-    fn rejects_bad_share_name() {
-        // validation is separate, but parser should not panic
-        let input = "[bad\nname]\npath = /tmp\n";
-        let cfg = SambaConfig::parse(input);
-        // name will be truncated or as-is; important is no panic
-        assert!(!cfg.shares.is_empty() || true);
+    fn updates_only_managed_values_and_keeps_unknown_lines() {
+        let cfg = SambaConfig::parse("[global]\nworkgroup = WORKGROUP\n\n[data]\npath = /old\nread only = yes\ncustom = keep\n# comment survives\n").unwrap();
+        let mut desired = cfg.shares.clone();
+        desired[0].path = "/new folder".into();
+        desired[0].read_only = false;
+        let rendered = cfg.render_with_shares(&desired).unwrap();
+        assert!(rendered.contains("path = \"/new folder\""));
+        assert!(rendered.contains("read only = no"));
+        assert!(rendered.contains("custom = keep"));
+        assert!(rendered.contains("# comment survives"));
+        assert!(rendered.contains("workgroup = WORKGROUP"));
+    }
+
+    #[test]
+    fn removes_a_share_removed_from_desired_list() {
+        let cfg = SambaConfig::parse("[global]\nworkgroup = WORKGROUP\n[a]\npath = /a\n[b]\npath = /b\n").unwrap();
+        let rendered = cfg.render_with_shares(&cfg.shares[..1]).unwrap();
+        assert!(rendered.contains("[a]"));
+        assert!(!rendered.contains("[b]"));
+    }
+
+    #[test]
+    fn adds_new_share_without_rewriting_existing_sections() {
+        let cfg = SambaConfig::parse("[global]\nworkgroup = WORKGROUP\n").unwrap();
+        let share = Share { name: "new".into(), path: "/srv/new".into(), comment: String::new(), read_only: false, guest_ok: false, extra: BTreeMap::new() };
+        let rendered = cfg.render_with_shares(&[share]).unwrap();
+        assert!(rendered.contains("[global]\nworkgroup = WORKGROUP"));
+        assert!(rendered.contains("[new]"));
+    }
+
+    #[test]
+    fn refuses_ambiguous_or_external_include_configuration() {
+        assert!(SambaConfig::parse("[global]\ninclude = /etc/samba/extra.conf\n").is_err());
+        assert!(SambaConfig::parse("[a]\npath = /a\n[a]\npath = /b\n").is_err());
+        assert!(SambaConfig::parse("[broken\npath = /x\n").is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_managed_keys() {
+        assert!(SambaConfig::parse("[a]\npath = /a\npath = /b\n").is_err());
     }
 }
