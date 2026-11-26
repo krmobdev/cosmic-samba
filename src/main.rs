@@ -117,7 +117,6 @@ impl Application for App {
                         comment: self.new_comment.clone(),
                         read_only: false,
                         guest_ok: false, // default false for security
-                        extra: Default::default(),
                     });
                     self.new_name.clear();
                     self.new_path.clear();
