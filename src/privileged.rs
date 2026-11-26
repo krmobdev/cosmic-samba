@@ -207,10 +207,23 @@ fn write_config_atomically(path: &Path, content: &str) -> Result<(), String> {
         }
 
         if path.exists() {
+            if let Ok(backup_metadata) = fs::symlink_metadata(&backup_path) {
+                if backup_metadata.file_type().is_symlink() || !backup_metadata.is_file() {
+                    return Err("Отказ от создания резервной копии: smb.conf.bak не является обычным файлом".into());
+                }
+            }
             fs::copy(path, &backup_path).map_err(|e| format!("Не удалось создать резервную копию: {e}"))?;
             if let Some(metadata) = &original {
                 fs::set_permissions(&backup_path, fs::Permissions::from_mode(metadata.permissions().mode() & 0o777))
                     .map_err(|e| format!("Не удалось установить права резервной копии: {e}"))?;
+                let owner = Command::new("chown")
+                    .arg(format!("--reference={}", path.display()))
+                    .arg(&backup_path)
+                    .output()
+                    .map_err(|e| format!("Не удалось сохранить владельца резервной копии: {e}"))?;
+                if !owner.status.success() {
+                    return Err(format!("Не удалось сохранить владельца резервной копии: {}", String::from_utf8_lossy(&owner.stderr).trim()));
+                }
             }
             fs::File::open(&backup_path).and_then(|f| f.sync_all())
                 .map_err(|e| format!("Не удалось синхронизировать резервную копию: {e}"))?;
